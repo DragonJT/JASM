@@ -1,0 +1,1 @@
+npx tsc && open -a nwjs --args /Users/jonathanthoms/Documents/typescript/JASM/bin/
