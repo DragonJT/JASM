@@ -158,14 +158,15 @@ interface ICallableFunction{
 
 class JFunction implements ICallableFunction {
     funcIndex:number;
+    localIndex = 0;
     name: String;
     args: JArg[];
     code: number[] = [];
 
-    constructor(index:number, name: String, args: JArg[]) {
+    constructor(index:number, name: String, args:JArg[]) {
         this.funcIndex = index;
-        this.args = args;
         this.name = name;
+        this.args = args;
         for(var i=0;i<args.length;i++)
             args[i].localIndex = i;
     }
@@ -188,9 +189,9 @@ class JFunction implements ICallableFunction {
         this.code.push(...unsignedLEB128(callableFunction.funcIndex));
     }
 
-    GetLocal(name:string){
+    GetLocal(local:ILocal){
         this.code.push(Opcodes.get_local);
-        this.code.push(...unsignedLEB128(this.args.find(a=>a.name == name)!.localIndex));
+        this.code.push(...unsignedLEB128(local.localIndex));
     }
 
     Encode(): number[] {
@@ -207,8 +208,8 @@ class JImportFunction implements ICallableFunction{
     args: JArg[];
     body:string;
 
-    constructor(index:number, name1: string, name2: string, args:JArg[], body:string) {
-        this.funcIndex = index;
+    constructor(funcIndex:number, name1: string, name2: string, args:JArg[], body:string) {
+        this.funcIndex = funcIndex;
         this.name1 = name1;
         this.name2 = name2;
         this.args = args;
@@ -246,14 +247,14 @@ class JASM {
     private functions: JFunction[] = [];
     private index = 0;
 
-    JImportFunction(name1:string, name2:string, args:JArg[], body:string):JImportFunction{
+    ImportFunction(name1:string, name2:string, args:JArg[], body:string):JImportFunction{
         var f = new JImportFunction(this.index, name1, name2, args, body);
         this.importFunctions.push(f);
         this.index++;
         return f;
     }
 
-    JFunction(name:string, args:JArg[]){
+    Function(name:string, args:JArg[]){
         var f = new JFunction(this.index, name, args);
         this.functions.push(f);
         this.index++;
@@ -332,15 +333,18 @@ class JASM {
 }
 
 //========================
-
+/*
 var jasm = new JASM();
-var env_print = jasm.JImportFunction("env", "print", [new JArg(Valtype.f32, 'i')], 'console.log(i);');
-var env_print2 = jasm.JImportFunction("env", "print2", [new JArg(Valtype.f32, 'i')], 'console.log("helloworld:"+i);');
-var main = jasm.JFunction("main", []);
-var func2 = jasm.JFunction("func2", [new JArg(Valtype.f32, 'i'), new JArg(Valtype.f32, 'ii')]);
+var env_print = jasm.ImportFunction("env", "print", [new JArg(Valtype.f32, 'i')], 'console.log(i);');
+var env_print2 = jasm.ImportFunction("env", "print2", [new JArg(Valtype.f32, 'i')], 'console.log("helloworld:"+i);');
+var main = jasm.Function("main", []);
 
-func2.GetLocal('i');
-func2.GetLocal('ii');
+var func2_i = new JArg(Valtype.f32, 'i');
+var func2_ii = new JArg(Valtype.f32, 'ii');
+var func2 = jasm.Function("func2", [func2_i, func2_ii]);
+
+func2.GetLocal(func2_i);
+func2.GetLocal(func2_ii);
 func2.F32Mul();
 func2.Call(env_print2);
 
@@ -358,4 +362,4 @@ WebAssembly.instantiate(wasm, jasm.ImportObject()).then(
         var exports = obj.instance.exports as any;
         exports.run();
     }
-);
+);*/
