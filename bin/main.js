@@ -1,4 +1,5 @@
 "use strict";
+//copied quite a lot from https://github.com/ColinEberhardt/chasm
 const ieee754 = (n) => {
     var data = new Float32Array([n]);
     var buffer = new ArrayBuffer(data.byteLength);
@@ -138,81 +139,149 @@ const createSection = (sectionType, data) => [
     sectionType,
     ...encodeVector(data)
 ];
-const codeFromProc = () => {
-    const code = [];
-    code.push(Opcodes.f32_const);
-    code.push(...ieee754(4.5));
-    code.push(Opcodes.call);
-    code.push(...unsignedLEB128(0));
-    const localCount = 0;
-    const locals = localCount > 0 ? [encodeLocal(localCount, Valtype.f32)] : [];
-    return encodeVector([...encodeVector(locals), ...code, Opcodes.end]);
-};
 class JFunction {
-    constructor(name, args) {
+    constructor(index, name, args) {
+        this.code = [];
+        this.funcIndex = index;
         this.args = args;
+        this.name = name;
+        for (var i = 0; i < args.length; i++)
+            args[i].localIndex = i;
+    }
+    F32Const(value) {
+        this.code.push(Opcodes.f32_const);
+        this.code.push(...ieee754(value));
+    }
+    F32Add() {
+        this.code.push(Opcodes.f32_add);
+    }
+    F32Mul() {
+        this.code.push(Opcodes.f32_mul);
+    }
+    Call(callableFunction) {
+        this.code.push(Opcodes.call);
+        this.code.push(...unsignedLEB128(callableFunction.funcIndex));
+    }
+    GetLocal(name) {
+        this.code.push(Opcodes.get_local);
+        this.code.push(...unsignedLEB128(this.args.find(a => a.name == name).localIndex));
+    }
+    Encode() {
+        const localCount = 0;
+        const locals = localCount > 0 ? [encodeLocal(localCount, Valtype.f32)] : [];
+        return encodeVector([...encodeVector(locals), ...this.code, Opcodes.end]);
+    }
+}
+class JImportFunction {
+    constructor(index, name1, name2, args, body) {
+        this.funcIndex = index;
+        this.name1 = name1;
+        this.name2 = name2;
+        this.args = args;
+        for (var i = 0; i < args.length; i++)
+            args[i].localIndex = i;
+        this.body = body;
+    }
+    Encode() {
+        return [
+            ...encodeString(this.name1),
+            ...encodeString(this.name2),
+            ExportType.func,
+            ...unsignedLEB128(this.funcIndex)
+        ];
+    }
+}
+class JArg {
+    constructor(type, name) {
+        this.localIndex = -1;
+        this.type = type;
         this.name = name;
     }
 }
-function emitter(functions) {
-    // Function types are vectors of parameters and return types. Currently
-    // WebAssembly only supports single return values
-    const printFunctionType = [
-        functionType,
-        ...encodeVector([Valtype.f32]),
-        emptyArray
-    ];
-    // TODO: optimise - some of the procs might have the same type signature
-    const funcTypes = functions.map(f => [
-        functionType,
-        ...encodeVector(f.args),
-        emptyArray
-    ]);
-    // the type section is a vector of function types
-    const typeSection = createSection(Section.type, encodeVector([printFunctionType, ...funcTypes]));
-    // the function section is a vector of type indices that indicate the type of each function
-    // in the code section
-    const funcSection = createSection(Section.func, encodeVector(functions.map((_, index) => index + 1 /* type index */)));
-    // the import section is a vector of imported functions
-    const printFunctionImport = [
-        ...encodeString("env"),
-        ...encodeString("print"),
-        ExportType.func,
-        0x00 // type index
-    ];
-    const importSection = createSection(Section.import, encodeVector([printFunctionImport]));
-    // the export section is a vector of exported functions
-    const exportSection = createSection(Section.export, encodeVector([
-        [
-            ...encodeString("run"),
-            ExportType.func,
-            functions.findIndex(f => f.name === "main") + 1
-        ]
-    ]));
-    // the code section contains vectors of functions
-    const codeSection = createSection(Section.code, encodeVector(functions.map(f => codeFromProc())));
-    return Uint8Array.from([
-        ...magicModuleHeader,
-        ...moduleVersion,
-        ...typeSection,
-        ...importSection,
-        ...funcSection,
-        ...exportSection,
-        ...codeSection
-    ]);
+class JASM {
+    constructor() {
+        this.importFunctions = [];
+        this.functions = [];
+        this.index = 0;
+    }
+    JImportFunction(name1, name2, args, body) {
+        var f = new JImportFunction(this.index, name1, name2, args, body);
+        this.importFunctions.push(f);
+        this.index++;
+        return f;
+    }
+    JFunction(name, args) {
+        var f = new JFunction(this.index, name, args);
+        this.functions.push(f);
+        this.index++;
+        return f;
+    }
+    ImportObject() {
+        var importObject = {};
+        for (var f of this.importFunctions) {
+            if (importObject[f.name1] == undefined)
+                importObject[f.name1] = {};
+            importObject[f.name1][f.name2] = new Function(...f.args.map(a => a.name), f.body);
+        }
+        return importObject;
+    }
+    Emit() {
+        // the type section is a vector of function types
+        // TODO: optimise - some of the functions might have the same type signature
+        const importFuncTypes = this.importFunctions.map(f => [
+            functionType,
+            ...encodeVector(f.args.map(a => a.type)),
+            emptyArray
+        ]);
+        const funcTypes = this.functions.map(f => [
+            functionType,
+            ...encodeVector(f.args.map(a => a.type)),
+            emptyArray
+        ]);
+        const typeSection = createSection(Section.type, encodeVector([...importFuncTypes, ...funcTypes]));
+        // the function section is a vector of type indices that indicate the type of each function
+        // in the code section
+        const funcSection = createSection(Section.func, encodeVector(this.functions.map((_, index) => unsignedLEB128(index + this.importFunctions.length))));
+        const importSection = createSection(Section.import, encodeVector(this.importFunctions.map(f => f.Encode())));
+        // the export section is a vector of exported functions
+        const exportSection = createSection(Section.export, encodeVector([
+            [
+                ...encodeString("run"),
+                ExportType.func,
+                this.functions.find(f => f.name === "main").funcIndex,
+            ]
+        ]));
+        // the code section contains vectors of functions
+        const codeSection = createSection(Section.code, encodeVector(this.functions.map(f => f.Encode())));
+        return Uint8Array.from([
+            ...magicModuleHeader,
+            ...moduleVersion,
+            ...typeSection,
+            ...importSection,
+            ...funcSection,
+            ...exportSection,
+            ...codeSection
+        ]);
+    }
 }
-;
 //========================
-var functions = [new JFunction("main", [])];
-var wasm = emitter(functions);
-const importObject = {
-    env: {
-        print(i) {
-            console.log(i);
-        },
-    },
-};
-WebAssembly.instantiate(wasm, importObject).then((obj) => {
+var jasm = new JASM();
+var env_print = jasm.JImportFunction("env", "print", [new JArg(Valtype.f32, 'i')], 'console.log(i);');
+var env_print2 = jasm.JImportFunction("env", "print2", [new JArg(Valtype.f32, 'i')], 'console.log("helloworld:"+i);');
+var main = jasm.JFunction("main", []);
+var func2 = jasm.JFunction("func2", [new JArg(Valtype.f32, 'i'), new JArg(Valtype.f32, 'ii')]);
+func2.GetLocal('i');
+func2.GetLocal('ii');
+func2.F32Mul();
+func2.Call(env_print2);
+main.F32Const(3);
+main.F32Const(5);
+main.Call(func2);
+main.F32Const(2);
+main.F32Const(4.5);
+main.Call(func2);
+var wasm = jasm.Emit();
+WebAssembly.instantiate(wasm, jasm.ImportObject()).then((obj) => {
     var exports = obj.instance.exports;
     exports.run();
 });
